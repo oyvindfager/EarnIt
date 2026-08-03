@@ -460,6 +460,7 @@ function App() {
   const [levelUpToast, setLevelUpToast] = useState<string | null>(null)
   const [installPromptEvent, setInstallPromptEvent] = useState<DeferredInstallPromptEvent | null>(null)
   const [isInstalledApp, setIsInstalledApp] = useState(false)
+  const [isIosInstallable, setIsIosInstallable] = useState(false)
   const previousLevelByChildRef = useRef<Record<string, string | null>>({})
   const toastTimerRef = useRef<number | null>(null)
   const parentIdleTimerRef = useRef<number | null>(null)
@@ -1003,6 +1004,10 @@ function App() {
   useEffect(() => {
     const mediaQuery = window.matchMedia('(display-mode: standalone)')
     setIsInstalledApp(mediaQuery.matches)
+    const userAgent = window.navigator.userAgent
+    const isIosDevice = /iPhone|iPad|iPod/.test(userAgent)
+    const isSafari = /Safari/.test(userAgent) && !/CriOS|FxiOS/.test(userAgent)
+    setIsIosInstallable(isIosDevice && isSafari && !mediaQuery.matches)
 
     const onBeforeInstallPrompt = (event: Event) => {
       event.preventDefault()
@@ -1286,6 +1291,11 @@ function App() {
   }
 
   async function installApp() {
+    if (isIosInstallable && !installPromptEvent) {
+      window.alert('For iPhone/iPad: trykk Del-knappen i Safari og velg "Legg til på Hjem-skjerm".')
+      return
+    }
+
     if (!installPromptEvent) {
       window.alert('Installasjon er ikke tilgjengelig ennå. Prøv igjen om noen sekunder.')
       return
@@ -1297,6 +1307,8 @@ function App() {
       setInstallPromptEvent(null)
     }
   }
+
+  const canShowInstallButton = !isInstalledApp && (Boolean(installPromptEvent) || isIosInstallable)
 
   async function unlockParentMode(event: FormEvent) {
     event.preventDefault()
@@ -1896,11 +1908,6 @@ function App() {
           </p>
         </div>
         <div className="hero-side">
-          {!isInstalledApp && installPromptEvent && (
-            <button type="button" className="install-mini" onClick={installApp}>
-              Last ned app
-            </button>
-          )}
           {isLoggedIn && (
             <button type="button" className="logout-mini" onClick={logoutApp}>
               Logg ut
@@ -1923,6 +1930,11 @@ function App() {
         <section className="card auth-card">
           <h2>Logg inn</h2>
           <p className="mini login-help">Forsiden viser kun innlogging. Funksjonene blir tilgjengelige etter innlogging.</p>
+          {canShowInstallButton && (
+            <button type="button" className="install-cta" onClick={installApp}>
+              Installer app
+            </button>
+          )}
           <div className="role-switch">
             <button
               type="button"
