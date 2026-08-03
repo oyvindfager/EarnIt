@@ -34,6 +34,16 @@ type RewardLevel = {
   extraAmount: number
 }
 
+type ParentAccount = {
+  id: string
+  username: string
+  passwordHash: string
+  passwordSalt: string
+  passwordIterations: number
+  mustChangePassword: boolean
+  createdAt: string
+}
+
 type Entry = {
   id: string
   taskType: 'mandatory' | 'bonus' | 'penalty'
@@ -68,6 +78,7 @@ type ChildProfile = {
   childPinHash: string | null
   childPinSalt: string | null
   childPinIterations: number
+  childPinPlain: string | null
   mandatoryTasks: MandatoryTask[]
   bonusTasks: BonusTask[]
   penaltyTasks: PenaltyTask[]
@@ -88,6 +99,7 @@ type ParentSettings = {
   penaltyEnabled: boolean
   interestRatePct: number
   interestPeriod: InterestPeriod
+  parentAccounts: ParentAccount[]
   legacyPin?: string
 }
 
@@ -109,6 +121,28 @@ const AUTH_LOCK_MAX_ATTEMPTS = 5
 const AUTH_LOCK_MS = 30000
 const AUTH_IDLE_TIMEOUT_MS = 15 * 60 * 1000
 const CHILD_AUTH_ENDPOINT = import.meta.env.VITE_CHILD_AUTH_ENDPOINT?.trim() || ''
+const ADMIN_USERNAME = 'Fager'
+const ADMIN_PASSWORD = 'fager5262'
+const DEFAULT_CHILD_NAME = 'Barnets navn'
+
+const EMPTY_CHILD_PROFILE: ChildProfile = {
+  id: '__empty-child__',
+  childName: 'Ingen barn',
+  periodType: 'week',
+  baseAllowance: 0,
+  childPinHash: null,
+  childPinSalt: null,
+  childPinIterations: AUTH_ITERATIONS,
+  childPinPlain: null,
+  mandatoryTasks: [],
+  bonusTasks: [],
+  penaltyTasks: [],
+  rewardLevels: [],
+  historyFilter: 'all',
+  entries: [],
+  settlements: [],
+  carryPoints: 0,
+}
 
 function createRandomHex(bytes = 16): string {
   const values = crypto.getRandomValues(new Uint8Array(bytes))
@@ -147,6 +181,47 @@ function isValidChildCode(value: string): boolean {
   return /^(?=.*[A-Za-z])(?=.*\d)[A-Za-z\d]{8,}$/.test(sanitized)
 }
 
+function createChildCodeCandidate(length = 10): string {
+  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz'
+  const digits = '23456789'
+  const all = `${alphabet}${digits}`
+
+  while (true) {
+    let candidate = ''
+    for (let index = 0; index < length; index += 1) {
+      candidate += all[Math.floor(Math.random() * all.length)]
+    }
+    if (/[A-Za-z]/.test(candidate) && /\d/.test(candidate)) {
+      return candidate
+    }
+  }
+}
+
+function isValidParentPassword(value: string): boolean {
+  const sanitized = value.trim()
+  return sanitized.length >= 8 && /\d/.test(sanitized) && /[^A-Za-z0-9]/.test(sanitized)
+}
+
+function getParentPasswordStrengthLabel(value: string): string {
+  const sanitized = value.trim()
+  const score = [
+    sanitized.length >= 8,
+    /\d/.test(sanitized),
+    /[^A-Za-z0-9]/.test(sanitized),
+    /[A-Z]/.test(sanitized),
+  ].filter(Boolean).length
+  if (score >= 4) {
+    return 'Sterkt'
+  }
+  if (score >= 3) {
+    return 'Bra'
+  }
+  if (score >= 2) {
+    return 'Svakt'
+  }
+  return 'Veldig svakt'
+}
+
 async function authenticateChildCodeWithBackend(code: string): Promise<string> {
   const response = await fetch(CHILD_AUTH_ENDPOINT, {
     method: 'POST',
@@ -167,29 +242,20 @@ async function authenticateChildCodeWithBackend(code: string): Promise<string> {
   return payload.childId
 }
 
-function createDefaultProfile(name = 'Barn'): ChildProfile {
+function createDefaultProfile(name = DEFAULT_CHILD_NAME): ChildProfile {
   return {
     id: crypto.randomUUID(),
     childName: name,
     periodType: 'week',
-    baseAllowance: 120,
+    baseAllowance: 0,
     childPinHash: null,
     childPinSalt: null,
     childPinIterations: AUTH_ITERATIONS,
-    mandatoryTasks: [
-      { id: crypto.randomUUID(), name: 'Rydde rommet', requiredCount: 3 },
-      { id: crypto.randomUUID(), name: 'Dekke av bordet', requiredCount: 4 },
-    ],
-    bonusTasks: [
-      { id: crypto.randomUUID(), name: 'Hjelpe til med matlaging', points: 4 },
-      { id: crypto.randomUUID(), name: 'Stovsuge stua', points: 6 },
-    ],
-    penaltyTasks: [{ id: crypto.randomUUID(), name: 'Ble kjørt i stedet for å gå/sykle', points: 3 }],
-    rewardLevels: [
-      { id: crypto.randomUUID(), name: 'Nivå 1', minPoints: 10, extraAmount: 20 },
-      { id: crypto.randomUUID(), name: 'Nivå 2', minPoints: 20, extraAmount: 50 },
-      { id: crypto.randomUUID(), name: 'Nivå 3', minPoints: 35, extraAmount: 90 },
-    ],
+    childPinPlain: null,
+    mandatoryTasks: [],
+    bonusTasks: [],
+    penaltyTasks: [],
+    rewardLevels: [],
     historyFilter: 'all',
     entries: [],
     settlements: [],
@@ -197,7 +263,7 @@ function createDefaultProfile(name = 'Barn'): ChildProfile {
   }
 }
 
-const initialProfile = createDefaultProfile('Barn')
+const initialProfile = createDefaultProfile(DEFAULT_CHILD_NAME)
 const initialState: AppState = {
   profiles: [initialProfile],
   activeChildId: initialProfile.id,
@@ -211,6 +277,7 @@ const initialState: AppState = {
     penaltyEnabled: false,
     interestRatePct: 0,
     interestPeriod: 'month',
+    parentAccounts: [],
     legacyPin: '1234',
   },
 }
@@ -305,6 +372,36 @@ function isEntryInCurrentPeriod(entry: Entry, periodType: PeriodType, periodKey:
   return getPeriodKey(new Date(entry.timestamp), periodType) === periodKey
 }
 
+function isLegacySeedProfile(profile: ChildProfile): boolean {
+  const looksLikeSeedName = ['mille', 'barn'].includes(profile.childName.trim().toLowerCase())
+  const hasNoConfiguredLogin = !profile.childPinHash && !profile.childPinSalt
+  const hasNoCustomData =
+    profile.mandatoryTasks.length === 0 &&
+    profile.bonusTasks.length === 0 &&
+    profile.penaltyTasks.length === 0 &&
+    profile.rewardLevels.length === 0 &&
+    profile.entries.length === 0 &&
+    profile.settlements.length === 0 &&
+    profile.carryPoints === 0
+
+  return looksLikeSeedName && profile.baseAllowance === 0 && hasNoConfiguredLogin && hasNoCustomData
+}
+
+function isDefaultChildName(value: string): boolean {
+  return value.trim().toLowerCase() === DEFAULT_CHILD_NAME.toLowerCase()
+}
+
+function formatChildNameForDisplay(name: string): string {
+  if (isDefaultChildName(name)) {
+    return `${name} (endres i Innstillinger)`
+  }
+  return name
+}
+
+function getBonusTaskKey(name: string, points: number): string {
+  return `${name.trim().toLowerCase()}::${Math.max(1, Math.floor(points))}`
+}
+
 function normalizeLoadedState(raw: unknown): AppState {
   if (!raw || typeof raw !== 'object') {
     return initialState
@@ -325,14 +422,15 @@ function normalizeLoadedState(raw: unknown): AppState {
     carryPoints?: number
   }
 
-  if (Array.isArray(candidate.profiles) && candidate.profiles.length > 0) {
-    const profiles = candidate.profiles.map((profile) => ({
+  if (Array.isArray(candidate.profiles)) {
+    const mappedProfiles = candidate.profiles.map((profile) => ({
       ...createDefaultProfile(profile.childName || 'Barn'),
       ...profile,
       childPinHash: profile.childPinHash ?? candidate.parentSettings?.childPinHash ?? null,
       childPinSalt: profile.childPinSalt ?? candidate.parentSettings?.childPinSalt ?? null,
       childPinIterations:
         profile.childPinIterations ?? candidate.parentSettings?.childPinIterations ?? AUTH_ITERATIONS,
+      childPinPlain: profile.childPinPlain ?? null,
       mandatoryTasks: profile.mandatoryTasks ?? [],
       bonusTasks: profile.bonusTasks ?? [],
       penaltyTasks: profile.penaltyTasks ?? [],
@@ -346,8 +444,17 @@ function normalizeLoadedState(raw: unknown): AppState {
       })),
     }))
 
+    const filteredProfiles =
+      mappedProfiles.length === 1 && isLegacySeedProfile(mappedProfiles[0])
+        ? []
+        : mappedProfiles
+
+    const profiles = filteredProfiles.length > 0
+      ? filteredProfiles
+      : [createDefaultProfile(DEFAULT_CHILD_NAME)]
+
     const activeChildId =
-      profiles.find((p) => p.id === candidate.activeChildId)?.id ?? profiles[0].id
+      profiles.find((p) => p.id === candidate.activeChildId)?.id ?? profiles[0]?.id ?? ''
 
     return {
       profiles,
@@ -362,6 +469,7 @@ function normalizeLoadedState(raw: unknown): AppState {
         penaltyEnabled: candidate.parentSettings?.penaltyEnabled ?? false,
         interestRatePct: Math.max(0, candidate.parentSettings?.interestRatePct ?? 0),
         interestPeriod: candidate.parentSettings?.interestPeriod ?? 'month',
+        parentAccounts: candidate.parentSettings?.parentAccounts ?? [],
         legacyPin: candidate.parentSettings?.legacyPin ?? candidate.parentSettings?.parentPin,
       },
     }
@@ -374,6 +482,7 @@ function normalizeLoadedState(raw: unknown): AppState {
     migrated.childPinHash = candidate.parentSettings?.childPinHash ?? null
     migrated.childPinSalt = candidate.parentSettings?.childPinSalt ?? null
     migrated.childPinIterations = candidate.parentSettings?.childPinIterations ?? AUTH_ITERATIONS
+    migrated.childPinPlain = null
     migrated.mandatoryTasks = candidate.mandatoryTasks ?? migrated.mandatoryTasks
     migrated.bonusTasks = candidate.bonusTasks ?? migrated.bonusTasks
     migrated.penaltyTasks = candidate.penaltyTasks ?? migrated.penaltyTasks
@@ -400,6 +509,7 @@ function normalizeLoadedState(raw: unknown): AppState {
         penaltyEnabled: false,
         interestRatePct: 0,
         interestPeriod: 'month',
+        parentAccounts: [],
         legacyPin: '1234',
       },
     }
@@ -429,8 +539,13 @@ function App() {
   const [parentPreviewChildView, setParentPreviewChildView] = useState(false)
   const [isLoggedIn, setIsLoggedIn] = useState(false)
   const [isParentUnlocked, setIsParentUnlocked] = useState(false)
+  const [parentUsernameInput, setParentUsernameInput] = useState('')
   const [passwordInput, setPasswordInput] = useState('')
   const [showPasswordInput, setShowPasswordInput] = useState(false)
+  const [isParentAdminSession, setIsParentAdminSession] = useState(false)
+  const [mustChangeParentPasswordAccountId, setMustChangeParentPasswordAccountId] = useState<string | null>(null)
+  const [firstLoginNewPassword, setFirstLoginNewPassword] = useState('')
+  const [showFirstLoginNewPassword, setShowFirstLoginNewPassword] = useState(false)
   const [childPinInput, setChildPinInput] = useState('')
   const [showChildPinInput, setShowChildPinInput] = useState(false)
   const [rememberParentSession, setRememberParentSession] = useState(true)
@@ -439,10 +554,11 @@ function App() {
   const [activeTab, setActiveTab] = useState<AppTab>('overview')
 
   const [newChildName, setNewChildName] = useState('')
-  const [newParentPassword, setNewParentPassword] = useState('')
-  const [showNewParentPassword, setShowNewParentPassword] = useState(false)
-  const [newChildPin, setNewChildPin] = useState('')
-  const [showNewChildPin, setShowNewChildPin] = useState(false)
+  const [newParentAccountUsername, setNewParentAccountUsername] = useState('')
+  const [newParentAccountPassword, setNewParentAccountPassword] = useState('')
+  const [showNewParentAccountPassword, setShowNewParentAccountPassword] = useState(false)
+  const [newParentAccountMustChangePassword, setNewParentAccountMustChangePassword] = useState(true)
+  const [visibleChildCodeById, setVisibleChildCodeById] = useState<Record<string, boolean>>({})
   const [historyPaymentFilter, setHistoryPaymentFilter] = useState<PaymentStatusFilter>('all')
 
   const [newMandatoryName, setNewMandatoryName] = useState('')
@@ -467,7 +583,8 @@ function App() {
   const importInputRef = useRef<HTMLInputElement | null>(null)
 
   const activeProfile =
-    state.profiles.find((profile) => profile.id === state.activeChildId) ?? state.profiles[0]
+    state.profiles.find((profile) => profile.id === state.activeChildId) ?? state.profiles[0] ?? EMPTY_CHILD_PROFILE
+  const hasProfiles = state.profiles.length > 0
 
   const currentPeriodKey = getPeriodKey(new Date(), activeProfile.periodType)
   const currentPeriodLabel = getPeriodLabel(currentPeriodKey, activeProfile.periodType)
@@ -582,7 +699,7 @@ function App() {
   const mandatoryCompletionPct =
     mandatoryRequiredTotal > 0
       ? Math.round((mandatoryDoneTotal / mandatoryRequiredTotal) * 100)
-      : 100
+      : 0
 
   const nextLevel = sortedLevels.find((level) => level.minPoints > pointsAvailableNow) ?? null
   const payoutChartData = [
@@ -616,17 +733,86 @@ function App() {
       ),
     [activeProfile.bonusTasks],
   )
-  const bonusEntriesThisPeriod = useMemo(
-    () =>
-      currentPeriodEntries
+  const activeProfileBonusTaskByKey = useMemo(() => {
+    const map = new Map<string, BonusTask>()
+    activeProfile.bonusTasks.forEach((task) => {
+      map.set(getBonusTaskKey(task.name, task.points), task)
+    })
+    return map
+  }, [activeProfile.bonusTasks])
+
+  const sharedBonusTasks = useMemo(() => {
+    const taskMap = new Map<
+      string,
+      {
+        key: string
+        name: string
+        points: number
+        childNames: string[]
+      }
+    >()
+
+    state.profiles.forEach((profile) => {
+      profile.bonusTasks.forEach((task) => {
+        const key = getBonusTaskKey(task.name, task.points)
+        const existing = taskMap.get(key)
+        if (!existing) {
+          taskMap.set(key, {
+            key,
+            name: task.name,
+            points: task.points,
+            childNames: [profile.childName],
+          })
+          return
+        }
+        if (!existing.childNames.includes(profile.childName)) {
+          existing.childNames.push(profile.childName)
+        }
+      })
+    })
+
+    return Array.from(taskMap.values())
+      .map((item) => ({
+        ...item,
+        childNames: [...item.childNames].sort((a, b) =>
+          a.localeCompare(b, 'nb-NO', { sensitivity: 'base' }),
+        ),
+      }))
+      .sort((a, b) => a.name.localeCompare(b.name, 'nb-NO', { sensitivity: 'base' }))
+  }, [state.profiles])
+
+  const sharedBonusEntriesThisPeriod = useMemo(() => {
+    const now = new Date()
+    const entries = state.profiles.flatMap((profile) => {
+      const profileCurrentPeriodKey = getPeriodKey(now, profile.periodType)
+      return profile.entries
         .filter((entry) => entry.taskType === 'bonus')
-        .map((entry) => ({
-          id: entry.id,
-          taskName: activeProfile.bonusTasks.find((task) => task.id === entry.taskId)?.name ?? 'Ukjent oppgave',
-          timestamp: entry.timestamp,
-        })),
-    [activeProfile.bonusTasks, currentPeriodEntries],
-  )
+        .filter((entry) => getPeriodKey(new Date(entry.timestamp), profile.periodType) === profileCurrentPeriodKey)
+        .map((entry) => {
+          const task = profile.bonusTasks.find((item) => item.id === entry.taskId)
+          return {
+            id: `${profile.id}:${entry.id}`,
+            taskName: task?.name ?? 'Ukjent oppgave',
+            points: task?.points ?? 0,
+            timestamp: entry.timestamp,
+            childName: profile.childName,
+            taskKey: getBonusTaskKey(task?.name ?? 'Ukjent oppgave', task?.points ?? 1),
+          }
+        })
+    })
+
+    return entries.sort(
+      (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime(),
+    )
+  }, [state.profiles])
+
+  const sharedBonusCountByTaskKey = useMemo(() => {
+    const map = new Map<string, number>()
+    sharedBonusEntriesThisPeriod.forEach((entry) => {
+      map.set(entry.taskKey, (map.get(entry.taskKey) ?? 0) + 1)
+    })
+    return map
+  }, [sharedBonusEntriesThisPeriod])
 
   const childPinConfigured =
     Boolean(CHILD_AUTH_ENDPOINT) ||
@@ -786,9 +972,12 @@ function App() {
     state.parentSettings.interestRatePct,
   ])
 
-  const nextLevelProgressPct = nextLevel
-    ? Math.min(100, Math.round((pointsAvailableNow / nextLevel.minPoints) * 100))
-    : 100
+  const hasConfiguredLevels = sortedLevels.length > 0
+  const nextLevelProgressPct = !hasConfiguredLevels
+    ? 0
+    : nextLevel
+      ? Math.min(100, Math.round((pointsAvailableNow / nextLevel.minPoints) * 100))
+      : 100
   const maxExtraAmount = sortedLevels.at(-1)?.extraAmount ?? 0
   const maxPossiblePayout = (mandatoryMet ? activeProfile.baseAllowance : 0) + maxExtraAmount
   const payoutProgressPct =
@@ -825,31 +1014,18 @@ function App() {
     },
   ]
   const hasCelebration = reachedLevelNow !== null && mandatoryMet
-  const parentPasswordHasDigit = /\d/.test(newParentPassword)
-  const parentPasswordHasSpecial = /[^A-Za-z0-9]/.test(newParentPassword)
-  const parentPasswordLongEnough = newParentPassword.trim().length >= 8
-  const passwordStrengthScore = [
-    parentPasswordLongEnough,
-    parentPasswordHasDigit,
-    parentPasswordHasSpecial,
-    /[A-Z]/.test(newParentPassword),
-  ].filter(Boolean).length
-  const passwordStrengthLabel =
-    passwordStrengthScore >= 4
-      ? 'Sterkt'
-      : passwordStrengthScore >= 3
-        ? 'Bra'
-        : passwordStrengthScore >= 2
-          ? 'Svakt'
-          : 'Veldig svakt'
-
+  const adminTempPasswordStrength = getParentPasswordStrengthLabel(newParentAccountPassword)
+  const firstLoginPasswordStrength = getParentPasswordStrengthLabel(firstLoginNewPassword)
   const isParentMode = role === 'parent' && isParentUnlocked
-  const canManage = isParentMode
+  const isParentPasswordResetRequired = Boolean(mustChangeParentPasswordAccountId)
+  const isParentLockedToPasswordReset = isParentMode && isParentPasswordResetRequired
+  const canManage = isParentMode && !isParentPasswordResetRequired
   const isChildMode = isLoggedIn && (!isParentMode || parentPreviewChildView)
+  const mustRenameDefaultChildBeforeTaskSetup = hasProfiles && isDefaultChildName(activeProfile.childName)
   const canRegisterTasks = isLoggedIn && role === 'child'
   const canRegisterTasksInCurrentView =
     canRegisterTasks || (canManage && (parentTestRegistrationEnabled || parentPreviewChildView))
-  const canManageTaskSetup = canManage && !isChildMode
+  const canManageTaskSetup = canManage && !isChildMode && !mustRenameDefaultChildBeforeTaskSetup
 
   useEffect(() => {
     if (!isLoggedIn) {
@@ -1131,6 +1307,15 @@ function App() {
     persist({ ...state, profiles: nextProfiles })
   }
 
+  function updateProfileById(profileId: string, updater: (profile: ChildProfile) => ChildProfile) {
+    const nextProfiles = state.profiles.map((profile) =>
+      profile.id === profileId ? updater(profile) : profile,
+    )
+    const nextActiveId =
+      state.activeChildId === profileId ? profileId : state.activeChildId
+    persist({ ...state, profiles: nextProfiles, activeChildId: nextActiveId })
+  }
+
   function updateSelectedChildrenForTasks(childId: string, isSelected: boolean) {
     setTaskTargetChildIds((previous) => {
       if (isSelected) {
@@ -1181,9 +1366,14 @@ function App() {
     if (nextRole !== 'parent') {
       setParentPreviewChildView(false)
       setParentTestRegistrationEnabled(false)
+      setMustChangeParentPasswordAccountId(null)
     }
+    setIsParentAdminSession(false)
+    setParentUsernameInput('')
     setPasswordInput('')
     setShowPasswordInput(false)
+    setFirstLoginNewPassword('')
+    setShowFirstLoginNewPassword(false)
     setChildPinInput('')
     setShowChildPinInput(false)
   }
@@ -1282,8 +1472,13 @@ function App() {
     setParentPreviewChildView(false)
     setParentTestRegistrationEnabled(false)
     setIsParentUnlocked(false)
+    setIsParentAdminSession(false)
+    setMustChangeParentPasswordAccountId(null)
+    setParentUsernameInput('')
     setPasswordInput('')
     setShowPasswordInput(false)
+    setFirstLoginNewPassword('')
+    setShowFirstLoginNewPassword(false)
     setChildPinInput('')
     setShowChildPinInput(false)
     setActiveTab('overview')
@@ -1308,12 +1503,12 @@ function App() {
     }
   }
 
-  const canShowInstallButton = !isInstalledApp && (Boolean(installPromptEvent) || isIosInstallable)
+  const showFrontInstallButton = !isInstalledApp
 
   async function unlockParentMode(event: FormEvent) {
     event.preventDefault()
 
-    if (!passwordInput.trim()) {
+    if (!parentUsernameInput.trim() || !passwordInput.trim()) {
       return
     }
 
@@ -1323,32 +1518,21 @@ function App() {
       return
     }
 
-    const entered = passwordInput.trim()
-    const hasPassword =
-      Boolean(state.parentSettings.passwordHash) && Boolean(state.parentSettings.passwordSalt)
+    const enteredUsername = parentUsernameInput.trim()
+    const enteredPassword = passwordInput.trim()
 
-    let isValid = false
-    let shouldMigrateLegacyPin = false
+    const isAdminLogin =
+      enteredUsername.toLowerCase() === ADMIN_USERNAME.toLowerCase() && enteredPassword === ADMIN_PASSWORD
 
-    if (hasPassword && state.parentSettings.passwordSalt && state.parentSettings.passwordHash) {
-      const hash = await derivePasswordHash(
-        entered,
-        state.parentSettings.passwordSalt,
-        state.parentSettings.passwordIterations,
-      )
-      isValid = hash === state.parentSettings.passwordHash
-    } else if (state.parentSettings.legacyPin) {
-      isValid = entered === state.parentSettings.legacyPin
-      shouldMigrateLegacyPin = isValid
-    }
-
-    if (isValid) {
+    if (isAdminLogin) {
       setRole('parent')
       setParentPreviewChildView(false)
       setParentTestRegistrationEnabled(false)
       setIsParentUnlocked(true)
+      setIsParentAdminSession(true)
       setIsLoggedIn(true)
       setActiveTab('overview')
+      setParentUsernameInput('')
       setPasswordInput('')
       setShowPasswordInput(false)
       setAuthAttempts(0)
@@ -1358,22 +1542,46 @@ function App() {
       } else {
         clearParentSession()
       }
-
-      if (shouldMigrateLegacyPin) {
-        const salt = createRandomHex(16)
-        const hash = await derivePasswordHash(entered, salt, AUTH_ITERATIONS)
-        persist({
-          ...state,
-          parentSettings: {
-            ...state.parentSettings,
-            passwordHash: hash,
-            passwordSalt: salt,
-            passwordIterations: AUTH_ITERATIONS,
-            legacyPin: undefined,
-          },
-        })
-      }
       return
+    }
+
+    const matchedAccount = state.parentSettings.parentAccounts.find(
+      (account) => account.username.toLowerCase() === enteredUsername.toLowerCase(),
+    )
+
+    if (matchedAccount) {
+      const hash = await derivePasswordHash(
+        enteredPassword,
+        matchedAccount.passwordSalt,
+        matchedAccount.passwordIterations,
+      )
+      if (hash === matchedAccount.passwordHash) {
+        setRole('parent')
+        setParentPreviewChildView(false)
+        setParentTestRegistrationEnabled(false)
+        setIsParentUnlocked(true)
+        setIsParentAdminSession(false)
+        setIsLoggedIn(true)
+        setActiveTab('overview')
+        setParentUsernameInput('')
+        setPasswordInput('')
+        setShowPasswordInput(false)
+        setAuthAttempts(0)
+        setAuthLockedUntil(null)
+        if (rememberParentSession) {
+          saveParentSession()
+        } else {
+          clearParentSession()
+        }
+
+        if (matchedAccount.mustChangePassword) {
+          setMustChangeParentPasswordAccountId(matchedAccount.id)
+          setFirstLoginNewPassword('')
+          setShowFirstLoginNewPassword(false)
+          setActiveTab('settings')
+        }
+        return
+      }
     }
 
     const nextAttempts = authAttempts + 1
@@ -1384,44 +1592,17 @@ function App() {
       window.alert('For mange feilforsøk. Innlogging er midlertidig låst.')
       return
     }
-    window.alert('Feil passord')
+    window.alert('Feil brukernavn eller passord')
   }
 
-  function addChildProfile(event: FormEvent) {
+  async function completeFirstParentPasswordChange(event: FormEvent) {
     event.preventDefault()
-    if (!newChildName.trim()) {
+    if (!mustChangeParentPasswordAccountId) {
       return
     }
-    const newProfile = createDefaultProfile(newChildName.trim())
-    const next = {
-      ...state,
-      profiles: [...state.profiles, newProfile],
-      activeChildId: newProfile.id,
-    }
-    persist(next)
-    setNewChildName('')
-  }
 
-  function removeActiveChild() {
-    if (state.profiles.length <= 1) {
-      window.alert('Du må ha minst ett barn i appen.')
-      return
-    }
-    if (!window.confirm(`Slette profil for ${activeProfile.childName}?`)) {
-      return
-    }
-    const remaining = state.profiles.filter((p) => p.id !== activeProfile.id)
-    persist({
-      ...state,
-      profiles: remaining,
-      activeChildId: remaining[0].id,
-    })
-  }
-
-  async function updateParentPassword(event: FormEvent) {
-    event.preventDefault()
-    const sanitized = newParentPassword.trim()
-    if (sanitized.length < 8 || !/\d/.test(sanitized) || !/[^A-Za-z0-9]/.test(sanitized)) {
+    const sanitized = firstLoginNewPassword.trim()
+    if (!isValidParentPassword(sanitized)) {
       window.alert('Passord må være minst 8 tegn og inneholde minst ett tall og ett spesialtegn.')
       return
     }
@@ -1433,68 +1614,272 @@ function App() {
       ...state,
       parentSettings: {
         ...state.parentSettings,
-        passwordHash: hash,
-        passwordSalt: salt,
-        passwordIterations: AUTH_ITERATIONS,
-        legacyPin: undefined,
+        parentAccounts: state.parentSettings.parentAccounts.map((account) =>
+          account.id === mustChangeParentPasswordAccountId
+            ? {
+                ...account,
+                passwordHash: hash,
+                passwordSalt: salt,
+                passwordIterations: AUTH_ITERATIONS,
+                mustChangePassword: false,
+              }
+            : account,
+        ),
       },
     })
-    setNewParentPassword('')
-    setShowNewParentPassword(false)
-    window.alert('Foreldrepassord er oppdatert.')
+
+    setMustChangeParentPasswordAccountId(null)
+    setFirstLoginNewPassword('')
+    setShowFirstLoginNewPassword(false)
+    window.alert('Passord oppdatert. Foreldrekontoen er klar til bruk.')
   }
 
-  async function updateChildPin(event: FormEvent) {
+  async function addChildProfile(event: FormEvent) {
     event.preventDefault()
-    const sanitized = newChildPin.trim()
-    if (!isValidChildCode(sanitized)) {
-      window.alert('Barnekode må være minst 8 tegn og inneholde både bokstaver og tall.')
+    if (!newChildName.trim()) {
+      window.alert('Skriv inn navn på barnet.')
       return
     }
 
+    const generatedCode = await generateUniqueChildCode()
+    if (!generatedCode) {
+      window.alert('Fant ikke en ledig kode akkurat nå. Prøv igjen.')
+      return
+    }
+
+    const salt = createRandomHex(16)
+    const hash = await derivePasswordHash(generatedCode, salt, AUTH_ITERATIONS)
+    const newProfile = createDefaultProfile(newChildName.trim())
+    newProfile.childPinHash = hash
+    newProfile.childPinSalt = salt
+    newProfile.childPinIterations = AUTH_ITERATIONS
+    newProfile.childPinPlain = generatedCode
+
+    const next = {
+      ...state,
+      profiles: [...state.profiles, newProfile],
+      activeChildId: newProfile.id,
+    }
+    persist(next)
+    setNewChildName('')
+    setVisibleChildCodeById((previous) => ({
+      ...previous,
+      [newProfile.id]: true,
+    }))
+    window.alert(`Barnet ${newProfile.childName} ble opprettet med automatisk kode. Trykk "Vis kode" i modulen "Barnets profil og kode".`)
+  }
+
+  function removeChildProfile(profileId: string) {
+    if (state.profiles.length <= 1) {
+      window.alert('Du må ha minst ett barn i appen.')
+      return
+    }
+    const profile = state.profiles.find((item) => item.id === profileId)
+    if (!profile) {
+      return
+    }
+    if (!window.confirm(`Slette profil for ${profile.childName}?`)) {
+      return
+    }
+    const remaining = state.profiles.filter((p) => p.id !== profileId)
+    const nextActiveId = remaining.some((profile) => profile.id === state.activeChildId)
+      ? state.activeChildId
+      : remaining[0].id
+    persist({
+      ...state,
+      profiles: remaining,
+      activeChildId: nextActiveId,
+    })
+    setVisibleChildCodeById((previous) => {
+      const next = { ...previous }
+      delete next[profileId]
+      return next
+    })
+  }
+
+  async function createParentAccessAccount(event: FormEvent) {
+    event.preventDefault()
+    if (!isParentAdminSession) {
+      return
+    }
+
+    const username = newParentAccountUsername.trim()
+    const tempPassword = newParentAccountPassword.trim()
+
+    if (username.length < 3) {
+      window.alert('Brukernavn må være minst 3 tegn.')
+      return
+    }
+
+    if (username.toLowerCase() === ADMIN_USERNAME.toLowerCase()) {
+      window.alert('Dette brukernavnet er reservert for admin.')
+      return
+    }
+
+    if (!isValidParentPassword(tempPassword)) {
+      window.alert('Midlertidig passord må være minst 8 tegn og inneholde minst ett tall og ett spesialtegn.')
+      return
+    }
+
+    const usernameTaken = state.parentSettings.parentAccounts.some(
+      (account) => account.username.toLowerCase() === username.toLowerCase(),
+    )
+    if (usernameTaken) {
+      window.alert('Brukernavnet er allerede i bruk. Velg et annet.')
+      return
+    }
+
+    const salt = createRandomHex(16)
+    const hash = await derivePasswordHash(tempPassword, salt, AUTH_ITERATIONS)
+
+    persist({
+      ...state,
+      parentSettings: {
+        ...state.parentSettings,
+        parentAccounts: [
+          ...state.parentSettings.parentAccounts,
+          {
+            id: crypto.randomUUID(),
+            username,
+            passwordHash: hash,
+            passwordSalt: salt,
+            passwordIterations: AUTH_ITERATIONS,
+            mustChangePassword: newParentAccountMustChangePassword,
+            createdAt: new Date().toISOString(),
+          },
+        ],
+      },
+    })
+
+    setNewParentAccountUsername('')
+    setNewParentAccountPassword('')
+    setShowNewParentAccountPassword(false)
+    setNewParentAccountMustChangePassword(true)
+    if (newParentAccountMustChangePassword) {
+      window.alert(`Foreldrekonto ${username} er opprettet. Brukeren må bytte passord ved første innlogging.`)
+      return
+    }
+    window.alert(`Foreldrekonto ${username} er opprettet med valgt brukernavn og passord.`)
+  }
+
+  async function findChildCodeConflict(code: string, excludedProfileId?: string): Promise<string | null> {
     for (const profile of state.profiles) {
-      if (profile.id === activeProfile.id) {
+      if (excludedProfileId && profile.id === excludedProfileId) {
         continue
       }
       if (!profile.childPinHash || !profile.childPinSalt) {
         continue
       }
       const existingHash = await derivePasswordHash(
-        sanitized,
+        code,
         profile.childPinSalt,
         profile.childPinIterations,
       )
       if (existingHash === profile.childPinHash) {
-        window.alert(`Koden er allerede i bruk av ${profile.childName}. Velg en annen kode.`)
-        return
+        return profile.childName
       }
+    }
+    return null
+  }
+
+  async function generateCodeForProfile(profileId: string) {
+    const profile = state.profiles.find((item) => item.id === profileId)
+    if (!profile) {
+      return
+    }
+    if (profile.childPinHash && profile.childPinSalt) {
+      window.alert('Barnekode finnes allerede. Fjern kode først hvis du vil lage en ny.')
+      return
+    }
+    const candidate = await generateUniqueChildCode(profileId)
+    if (!candidate) {
+      window.alert('Fant ikke en ledig kode akkurat nå. Prøv igjen.')
+      return
     }
 
     const salt = createRandomHex(16)
-    const hash = await derivePasswordHash(sanitized, salt, AUTH_ITERATIONS)
+    const hash = await derivePasswordHash(candidate, salt, AUTH_ITERATIONS)
 
-    updateActiveProfile((profile) => ({
-      ...profile,
+    updateProfileById(profileId, (item) => ({
+      ...item,
       childPinHash: hash,
       childPinSalt: salt,
       childPinIterations: AUTH_ITERATIONS,
+      childPinPlain: candidate,
     }))
-    setNewChildPin('')
-    setShowNewChildPin(false)
-    window.alert('Barnekode er lagret.')
+
+    setVisibleChildCodeById((previous) => ({
+      ...previous,
+      [profileId]: true,
+    }))
   }
 
-  function removeChildPin() {
+  async function replaceChildPinForProfile(profileId: string) {
+    const profile = state.profiles.find((item) => item.id === profileId)
+    if (!profile) {
+      return
+    }
+    if (
+      !window.confirm(
+        `Lage ny kode for ${profile.childName}? Gammel kode slutter å virke med en gang.`,
+      )
+    ) {
+      return
+    }
+
+    const candidate = await generateUniqueChildCode(profileId)
+    if (!candidate) {
+      window.alert('Fant ikke en ledig kode akkurat nå. Prøv igjen.')
+      return
+    }
+
+    const salt = createRandomHex(16)
+    const hash = await derivePasswordHash(candidate, salt, AUTH_ITERATIONS)
+
+    updateProfileById(profileId, (item) => ({
+      ...item,
+      childPinHash: hash,
+      childPinSalt: salt,
+      childPinIterations: AUTH_ITERATIONS,
+      childPinPlain: candidate,
+    }))
+
+    setVisibleChildCodeById((previous) => ({
+      ...previous,
+      [profileId]: true,
+    }))
+    window.alert(`Ny kode er laget for ${profile.childName}.`)
+  }
+
+  async function generateUniqueChildCode(excludedProfileId?: string): Promise<string | null> {
+    const maxAttempts = 50
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+      const candidate = createChildCodeCandidate(10)
+      const conflictName = await findChildCodeConflict(candidate, excludedProfileId)
+      if (!conflictName) {
+        return candidate
+      }
+    }
+    return null
+  }
+
+  function removeChildPinForProfile(profileId: string) {
     if (!canManage) {
       return
     }
     if (!window.confirm('Fjerne barnekoden? Barn kan da logge inn uten kode.')) {
       return
     }
-    updateActiveProfile((profile) => ({
+
+    updateProfileById(profileId, (profile) => ({
       ...profile,
       childPinHash: null,
       childPinSalt: null,
+      childPinPlain: null,
+    }))
+    setVisibleChildCodeById((previous) => ({
+      ...previous,
+      [profileId]: false,
     }))
   }
 
@@ -1597,6 +1982,10 @@ function App() {
 
   function addMandatoryTask(event: FormEvent) {
     event.preventDefault()
+    if (mustRenameDefaultChildBeforeTaskSetup) {
+      window.alert(`Endre barnenavnet fra "${DEFAULT_CHILD_NAME}" før du lager oppgaver.`)
+      return
+    }
     if (!canManage || !newMandatoryName.trim()) {
       return
     }
@@ -1620,6 +2009,10 @@ function App() {
 
   function addBonusTask(event: FormEvent) {
     event.preventDefault()
+    if (mustRenameDefaultChildBeforeTaskSetup) {
+      window.alert(`Endre barnenavnet fra "${DEFAULT_CHILD_NAME}" før du lager oppgaver.`)
+      return
+    }
     if (!canManage || !newBonusName.trim()) {
       return
     }
@@ -1643,6 +2036,10 @@ function App() {
 
   function addPenaltyTask(event: FormEvent) {
     event.preventDefault()
+    if (mustRenameDefaultChildBeforeTaskSetup) {
+      window.alert(`Endre barnenavnet fra "${DEFAULT_CHILD_NAME}" før du lager oppgaver.`)
+      return
+    }
     if (!canManage || !newPenaltyName.trim()) {
       return
     }
@@ -1666,6 +2063,10 @@ function App() {
 
   function addRewardLevel(event: FormEvent) {
     event.preventDefault()
+    if (mustRenameDefaultChildBeforeTaskSetup) {
+      window.alert(`Endre barnenavnet fra "${DEFAULT_CHILD_NAME}" før du lager oppgaver.`)
+      return
+    }
     if (!canManage || !newLevelName.trim()) {
       return
     }
@@ -1836,6 +2237,38 @@ function App() {
     }))
   }
 
+  function resetEntireAppData() {
+    if (!canManage || !isParentAdminSession) {
+      return
+    }
+    if (!window.confirm('Nullstille hele appen? Dette sletter alle barn, oppgaver, historikk og foreldrekontoer.')) {
+      return
+    }
+    const typedConfirmation = window.prompt('Skriv NULLSTILL for å bekrefte full nullstilling av appdata.')
+    if ((typedConfirmation ?? '').trim().toUpperCase() !== 'NULLSTILL') {
+      window.alert('Nullstilling avbrutt. Bekreftelsestekst stemte ikke.')
+      return
+    }
+
+    localStorage.removeItem(STORAGE_KEY)
+    clearParentSession()
+
+    setState(initialState)
+    setIsLoggedIn(false)
+    setRole('child')
+    setParentPreviewChildView(false)
+    setParentTestRegistrationEnabled(false)
+    setIsParentUnlocked(false)
+    setIsParentAdminSession(false)
+    setMustChangeParentPasswordAccountId(null)
+    setParentUsernameInput('')
+    setPasswordInput('')
+    setShowPasswordInput(false)
+    setFirstLoginNewPassword('')
+    setShowFirstLoginNewPassword(false)
+    setActiveTab('overview')
+  }
+
   function registerWithdrawalFromRentAccount(event: FormEvent) {
     event.preventDefault()
     if (!canManage) {
@@ -1908,9 +2341,9 @@ function App() {
           </p>
         </div>
         <div className="hero-side">
-          {isLoggedIn && (
-            <button type="button" className="logout-mini" onClick={logoutApp}>
-              Logg ut
+          {showFrontInstallButton && (
+            <button type="button" className="install-mini" onClick={installApp}>
+              Last ned app
             </button>
           )}
           {isLoggedIn && (
@@ -1918,9 +2351,14 @@ function App() {
               <p>
                 Aktiv periode: <strong>{currentPeriodRangeLabel}</strong>
               </p>
-              <p>
-                Aktiv profil: <strong>{activeProfile.childName}</strong>
-              </p>
+              <div className="hero-profile-row">
+                <p>
+                  Aktiv profil: <strong>{hasProfiles ? activeProfile.childName : 'Ingen barn opprettet'}</strong>
+                </p>
+                <button type="button" className="logout-mini" onClick={logoutApp}>
+                  Logg ut
+                </button>
+              </div>
             </div>
           )}
         </div>
@@ -1930,11 +2368,6 @@ function App() {
         <section className="card auth-card">
           <h2>Logg inn</h2>
           <p className="mini login-help">Forsiden viser kun innlogging. Funksjonene blir tilgjengelige etter innlogging.</p>
-          {canShowInstallButton && (
-            <button type="button" className="install-cta" onClick={installApp}>
-              Installer app
-            </button>
-          )}
           <div className="role-switch">
             <button
               type="button"
@@ -1982,14 +2415,25 @@ function App() {
           {role === 'parent' && (
             <form className="inline-form password-form" onSubmit={unlockParentMode}>
               <input
+                autoCapitalize="off"
+                autoCorrect="off"
+                spellCheck={false}
+                placeholder="Brukernavn for forelder"
+                value={parentUsernameInput}
+                onChange={(event) => setParentUsernameInput(event.target.value)}
+              />
+              <input
                 type={showPasswordInput ? 'text' : 'password'}
-                placeholder="Skriv foreldrepassord"
+                placeholder="Passord"
                 value={passwordInput}
                 onChange={(event) => setPasswordInput(event.target.value)}
               />
               <button type="button" onClick={() => setShowPasswordInput((value) => !value)}>
                 {showPasswordInput ? 'Skjul' : 'Vis'}
               </button>
+              <p className="mini login-help">
+                Admin logger inn med brukernavn <strong>{ADMIN_USERNAME}</strong> og sitt admin-passord.
+              </p>
               <label className="mini remember-check">
                 <input
                   type="checkbox"
@@ -2017,36 +2461,40 @@ function App() {
       )}
 
       <nav className="tab-nav" aria-label="Hovedfaner">
-        <button
-          type="button"
-          className={activeTab === 'overview' ? 'primary' : ''}
-          onClick={() => setActiveTab('overview')}
-        >
-          {isChildMode ? 'Hjem' : 'Oversikt'}
-        </button>
-        <button
-          type="button"
-          className={activeTab === 'tasks' ? 'primary' : ''}
-          onClick={() => setActiveTab('tasks')}
-        >
-          Oppgaver
-        </button>
-        {!isChildMode && (
-          <button
-            type="button"
-            className={activeTab === 'logs' ? 'primary' : ''}
-            onClick={() => setActiveTab('logs')}
-          >
-            Registreringer
-          </button>
+        {!isParentLockedToPasswordReset && (
+          <>
+            <button
+              type="button"
+              className={activeTab === 'overview' ? 'primary' : ''}
+              onClick={() => setActiveTab('overview')}
+            >
+              {isChildMode ? 'Hjem' : 'Oversikt'}
+            </button>
+            <button
+              type="button"
+              className={activeTab === 'tasks' ? 'primary' : ''}
+              onClick={() => setActiveTab('tasks')}
+            >
+              Oppgaver
+            </button>
+            {!isChildMode && (
+              <button
+                type="button"
+                className={activeTab === 'logs' ? 'primary' : ''}
+                onClick={() => setActiveTab('logs')}
+              >
+                Registreringer
+              </button>
+            )}
+            <button
+              type="button"
+              className={activeTab === 'history' ? 'primary' : ''}
+              onClick={() => setActiveTab('history')}
+            >
+              {isChildMode ? 'Tidligere' : 'Historikk'}
+            </button>
+          </>
         )}
-        <button
-          type="button"
-          className={activeTab === 'history' ? 'primary' : ''}
-          onClick={() => setActiveTab('history')}
-        >
-          {isChildMode ? 'Tidligere' : 'Historikk'}
-        </button>
         {isChildMode && (
           <button
             type="button"
@@ -2056,7 +2504,7 @@ function App() {
             Konto
           </button>
         )}
-        {canManage && !isChildMode && (
+        {(canManage || isParentLockedToPasswordReset) && !isChildMode && (
           <button
             type="button"
             className={activeTab === 'settings' ? 'primary' : ''}
@@ -2067,7 +2515,7 @@ function App() {
         )}
       </nav>
 
-      {canManage && activeTab !== 'tasks' && (
+      {canManage && activeTab !== 'tasks' && hasProfiles && (
         <section className="card parent-child-switch">
           <label>
             Vis barn
@@ -2082,12 +2530,14 @@ function App() {
             >
               {state.profiles.map((profile) => (
                 <option key={profile.id} value={profile.id}>
-                  {profile.childName}
+                  {formatChildNameForDisplay(profile.childName)}
                 </option>
               ))}
             </select>
           </label>
-          <p className="mini">Du ser nå progresjon og historikk for: <strong>{activeProfile.childName}</strong></p>
+          <p className="mini">
+            Du ser nå progresjon og historikk for: <strong>{formatChildNameForDisplay(activeProfile.childName)}</strong>
+          </p>
           <div className="role-switch preview-switch">
             <button
               type="button"
@@ -2195,7 +2645,11 @@ function App() {
               </div>
               <strong>Nivåfremdrift</strong>
               <p className="mini">
-                {nextLevel ? 'Fyll ringen for å nå neste nivå.' : 'Du har nådd alle nivåene!'}
+                {!hasConfiguredLevels
+                  ? 'Ingen nivåer satt opp ennå.'
+                  : nextLevel
+                    ? 'Fyll ringen for å nå neste nivå.'
+                    : 'Du har nådd alle nivåene!'}
               </p>
             </article>
 
@@ -2217,13 +2671,44 @@ function App() {
         </section>
       ))}
 
-      {activeTab === 'settings' && canManage && <section className="card settings-card">
+      {activeTab === 'settings' && (canManage || isParentLockedToPasswordReset) && <section className="card settings-card">
         <h2>Barn og innstillinger</h2>
-        <div className="settings-grid">
+        {isParentLockedToPasswordReset && (
+          <section className="settings-module module-security">
+            <h3>
+              <span className="module-glyph" aria-hidden="true">L</span>
+              Bytt passord før du fortsetter
+            </h3>
+            <p className="mini module-subtitle">
+              Denne foreldrekontoen bruker midlertidig passord. Sett et nytt passord for å låse opp resten av appen.
+            </p>
+            <form className="inline-form" onSubmit={completeFirstParentPasswordChange}>
+              <input
+                type={showFirstLoginNewPassword ? 'text' : 'password'}
+                placeholder="Nytt passord"
+                value={firstLoginNewPassword}
+                onChange={(event) => setFirstLoginNewPassword(event.target.value)}
+              />
+              <button type="button" onClick={() => setShowFirstLoginNewPassword((value) => !value)}>
+                {showFirstLoginNewPassword ? 'Skjul' : 'Vis'}
+              </button>
+              <button type="submit">Lagre nytt passord</button>
+            </form>
+            <p className="mini">
+              Passordstyrke: <strong>{firstLoginPasswordStrength}</strong>. Krav: minst 8 tegn, minst ett tall og minst ett spesialtegn.
+            </p>
+          </section>
+        )}
+
+        {canManage && <div className="settings-grid">
+          {!hasProfiles && (
+            <div className="period-chip">Ingen barn er opprettet ennå. Legg til barn under modulen "Barn i appen".</div>
+          )}
           <label>
             Aktivt barn
             <select
-              value={activeProfile.id}
+              value={hasProfiles ? activeProfile.id : ''}
+              disabled={!hasProfiles}
               onChange={(event) =>
                 persist({
                   ...state,
@@ -2240,26 +2725,12 @@ function App() {
           </label>
 
           <label>
-            Barnets navn
-            <input
-              value={activeProfile.childName}
-              disabled={!canManage}
-              onChange={(event) =>
-                updateActiveProfile((profile) => ({
-                  ...profile,
-                  childName: event.target.value,
-                }))
-              }
-            />
-          </label>
-
-          <label>
             Grunnukelønn (kr)
             <input
               type="number"
               min={0}
-              disabled={!canManage}
-              value={activeProfile.baseAllowance}
+              disabled={!canManage || !hasProfiles}
+              value={hasProfiles ? activeProfile.baseAllowance : 0}
               onChange={(event) =>
                 updateActiveProfile((profile) => ({
                   ...profile,
@@ -2271,9 +2742,10 @@ function App() {
 
           <label>
             Periode
+            <p className="mini">Velg om barnet skal ha ukelønn eller månedslønn.</p>
             <select
-              value={activeProfile.periodType}
-              disabled={!canManage}
+              value={hasProfiles ? activeProfile.periodType : 'week'}
+              disabled={!canManage || !hasProfiles}
               onChange={(event) =>
                 updateActiveProfile((profile) => ({
                   ...profile,
@@ -2300,27 +2772,203 @@ function App() {
               </p>
             </div>
           )}
-        </div>
+        </div>}
 
         {canManage && (
           <div className="parent-tools">
             <section className="settings-module module-children">
               <h3>
-                <span className="module-glyph" aria-hidden="true">B</span>
-                Barn i appen
+                <span className="module-glyph" aria-hidden="true">N</span>
+                Registrerte barn og koder
               </h3>
-              <p className="mini module-subtitle">Opprett, velg og administrer barn som skal bruke EarnIt.</p>
+              <p className="mini module-subtitle">Hvert barn har egen profil med navn og innloggingskode.</p>
+
+              {hasProfiles ? (
+                <div className="children-code-grid">
+                  {state.profiles.map((profile) => {
+                    const isActive = profile.id === activeProfile.id
+                    const canShowPlain = Boolean(profile.childPinPlain)
+                    const isCodeVisible = Boolean(visibleChildCodeById[profile.id]) && canShowPlain
+
+                    return (
+                      <article key={profile.id} className="child-code-card">
+                        <div className="child-code-head">
+                          <strong>{profile.childName}</strong>
+                          {isActive && <span className="mini">Aktivt barn</span>}
+                        </div>
+
+                        <input
+                          value={profile.childName}
+                          disabled={!canManage}
+                          onFocus={(event) => event.currentTarget.select()}
+                          onClick={(event) => event.currentTarget.select()}
+                          onChange={(event) =>
+                            updateProfileById(profile.id, (item) => ({
+                              ...item,
+                              childName: event.target.value,
+                            }))
+                          }
+                        />
+
+                        {CHILD_AUTH_ENDPOINT ? (
+                          <p className="mini">
+                            Barnekoder styres av backend når backend-autentisering er aktiv.
+                          </p>
+                        ) : (
+                          <>
+                            <input
+                              type={isCodeVisible ? 'text' : 'password'}
+                              autoCapitalize="off"
+                              autoCorrect="off"
+                              spellCheck={false}
+                              readOnly
+                              value={profile.childPinHash && profile.childPinSalt ? profile.childPinPlain ?? '********' : ''}
+                              placeholder={profile.childPinHash && profile.childPinSalt ? 'Kode finnes' : 'Ingen kode enda'}
+                            />
+                            <div className="row-actions">
+                              <button
+                                type="button"
+                                disabled={!canShowPlain}
+                                onClick={() =>
+                                  setVisibleChildCodeById((previous) => ({
+                                    ...previous,
+                                    [profile.id]: !previous[profile.id],
+                                  }))
+                                }
+                              >
+                                {isCodeVisible ? 'Skjul kode' : 'Vis kode'}
+                              </button>
+                              {!canShowPlain && profile.childPinHash && profile.childPinSalt && (
+                                <button type="button" onClick={() => replaceChildPinForProfile(profile.id)}>
+                                  Lag ny synlig kode
+                                </button>
+                              )}
+                              {profile.childPinHash && profile.childPinSalt ? (
+                                <button type="button" className="danger" onClick={() => removeChildPinForProfile(profile.id)}>
+                                  Fjern kode
+                                </button>
+                              ) : (
+                                <button type="button" onClick={() => generateCodeForProfile(profile.id)}>
+                                  Generer kode
+                                </button>
+                              )}
+                            </div>
+                          </>
+                        )}
+
+                        {!CHILD_AUTH_ENDPOINT && profile.childPinHash && profile.childPinSalt && !profile.childPinPlain && (
+                          <p className="mini">
+                            Denne koden ble lagret før synlig-kode-funksjonen. Fjern kode og generer ny hvis du vil se den.
+                          </p>
+                        )}
+
+                        <div className="row-actions">
+                          {!isActive && (
+                            <button
+                              type="button"
+                              onClick={() =>
+                                persist({
+                                  ...state,
+                                  activeChildId: profile.id,
+                                })
+                              }
+                            >
+                              Sett som aktiv
+                            </button>
+                          )}
+                          <button type="button" className="danger" onClick={() => removeChildProfile(profile.id)}>
+                            Slett barn
+                          </button>
+                        </div>
+                      </article>
+                    )
+                  })}
+                </div>
+              ) : (
+                <p className="mini">Legg til et barn først for å sette navn og kode.</p>
+              )}
+            </section>
+
+            <section className="settings-module module-security">
+              <h3>
+                <span className="module-glyph" aria-hidden="true">A</span>
+                Adminpanel: Foreldrekontoer
+              </h3>
+              <p className="mini module-subtitle">Lag brukernavn og passord for nye foreldre som skal teste appen.</p>
+
+              {isParentAdminSession ? (
+                <>
+                  <form className="inline-form" onSubmit={createParentAccessAccount}>
+                    <input
+                      autoCapitalize="off"
+                      autoCorrect="off"
+                      spellCheck={false}
+                      placeholder="Nytt foreldrebrukernavn"
+                      value={newParentAccountUsername}
+                      onChange={(event) => setNewParentAccountUsername(event.target.value)}
+                    />
+                    <input
+                      type={showNewParentAccountPassword ? 'text' : 'password'}
+                      placeholder="Passord for ny forelder"
+                      value={newParentAccountPassword}
+                      onChange={(event) => setNewParentAccountPassword(event.target.value)}
+                    />
+                    <button type="button" onClick={() => setShowNewParentAccountPassword((value) => !value)}>
+                      {showNewParentAccountPassword ? 'Skjul' : 'Vis'}
+                    </button>
+                    <button type="submit">Opprett foreldrekonto</button>
+                  </form>
+                  <label className="mini remember-check">
+                    <input
+                      type="checkbox"
+                      checked={newParentAccountMustChangePassword}
+                      onChange={(event) => setNewParentAccountMustChangePassword(event.target.checked)}
+                    />
+                    Krev passordbytte ved første innlogging
+                  </label>
+                  <p className="mini">
+                    Du velger brukernavn og passord for ny forelder. Passordstyrke: <strong>{adminTempPasswordStrength}</strong>.
+                    Krav: minst 8 tegn, minst ett tall og minst ett spesialtegn.
+                  </p>
+                </>
+              ) : (
+                <p className="mini">
+                  Du er logget inn som foreldrekonto. Kun admin kan opprette nye foreldrekontoer.
+                </p>
+              )}
+
+              <p className="mini">
+                Foreldrekontoer: <strong>{state.parentSettings.parentAccounts.length}</strong>
+              </p>
+              {state.parentSettings.parentAccounts.length > 0 && (
+                <ul className="mini">
+                  {state.parentSettings.parentAccounts.map((account) => (
+                    <li key={account.id}>
+                      {account.username} {account.mustChangePassword ? '(må bytte passord)' : '(aktiv)'}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </section>
+
+            <section className="settings-module module-children">
+              <h3>
+                <span className="module-glyph" aria-hidden="true">B</span>
+                Legg til barn
+              </h3>
+              <p className="mini module-subtitle">Skriv navn og opprett barnet. Kode håndteres i boksen over.</p>
+
               <form className="inline-form" onSubmit={addChildProfile}>
                 <input
-                  placeholder="Nytt barn"
+                  placeholder="Legg til nytt barn"
                   value={newChildName}
                   onChange={(event) => setNewChildName(event.target.value)}
                 />
-                <button type="submit">Legg til barn</button>
-                <button type="button" className="danger" onClick={removeActiveChild}>
-                  Slett aktivt barn
-                </button>
+                <button type="submit">Legg til nytt barn</button>
               </form>
+              <p className="mini">
+                Etter opprettelse dukker barnet opp i boksen "Registrerte barn og koder".
+              </p>
             </section>
 
             <section className="settings-module module-security">
@@ -2328,54 +2976,14 @@ function App() {
                 <span className="module-glyph" aria-hidden="true">S</span>
                 Sikkerhet
               </h3>
-              <p className="mini module-subtitle">Beskytt foreldredelen og sett trygg innlogging for barn.</p>
-              <form className="inline-form" onSubmit={updateParentPassword}>
-                <input
-                  type={showNewParentPassword ? 'text' : 'password'}
-                  placeholder="Nytt foreldrepassord"
-                  value={newParentPassword}
-                  onChange={(event) => setNewParentPassword(event.target.value)}
-                />
-                <button type="button" onClick={() => setShowNewParentPassword((value) => !value)}>
-                  {showNewParentPassword ? 'Skjul' : 'Vis'}
-                </button>
-                <button type="submit">Lagre passord</button>
-              </form>
-              <p className="mini">
-                Passordstyrke: <strong>{passwordStrengthLabel}</strong>. Krav: minst 8 tegn, minst ett
-                tall og minst ett spesialtegn.
-              </p>
+              <p className="mini module-subtitle">Barnesikkerhet og tips for riktig oppsett.</p>
 
-              {CHILD_AUTH_ENDPOINT ? (
+              {hasProfiles && isDefaultChildName(activeProfile.childName) && (
                 <p className="mini">
-                  Barnekoder styres av backend. Kode lagres ikke lokalt i appen når backend-autentisering er aktiv.
+                  Tips: Endre "{DEFAULT_CHILD_NAME}" til faktisk barnenavn i modulen "Barnets profil og kode".
                 </p>
-              ) : (
-                <>
-                  <form className="inline-form" onSubmit={updateChildPin}>
-                    <input
-                      type={showNewChildPin ? 'text' : 'password'}
-                      autoCapitalize="off"
-                      autoCorrect="off"
-                      spellCheck={false}
-                      placeholder={`Ny kode for ${activeProfile.childName} (minst 8, bokstaver + tall)`}
-                      value={newChildPin}
-                      onChange={(event) => setNewChildPin(event.target.value.replace(/[^A-Za-z0-9]/g, ''))}
-                    />
-                    <button type="button" onClick={() => setShowNewChildPin((value) => !value)}>
-                      {showNewChildPin ? 'Skjul' : 'Vis'}
-                    </button>
-                    <button type="submit">Lagre barnekode</button>
-                    <button type="button" className="danger" onClick={removeChildPin}>
-                      Fjern barnekode
-                    </button>
-                  </form>
-                  <p className="mini">
-                    Kode for {activeProfile.childName} er {activeProfile.childPinHash && activeProfile.childPinSalt ? 'aktiv' : 'ikke aktiv'}.
-                    Denne koden settes av forelder og brukes av barnet ved innlogging. Hvert barn må ha unik kode på minst 8 tegn med bokstaver og tall.
-                  </p>
-                </>
               )}
+              <p className="mini">Navn og barnekode administreres nå i modulen "Barnets profil og kode".</p>
             </section>
 
             <section className="settings-module module-rules">
@@ -2753,6 +3361,14 @@ function App() {
             )}
           </div>
         )}
+        {canManage && !isChildMode && mustRenameDefaultChildBeforeTaskSetup && (
+          <div className="card chart-span-2">
+            <p className="mini">
+              Før du lager oppgaver må du endre barnenavnet fra <strong>{DEFAULT_CHILD_NAME}</strong> i
+              Innstillinger.
+            </p>
+          </div>
+        )}
         <div className="card">
           <h2>Obligatoriske oppgaver</h2>
           <ul className="task-list">
@@ -2872,69 +3488,85 @@ function App() {
           {!canRegisterTasksInCurrentView && <p className="mini">Kun barn kan registrere utførte oppgaver.</p>}
 
           <ul className="task-list">
-            {sortedBonusTasks.map((task) => (
-              <li key={task.id}>
-                <div>
-                  {canManageTaskSetup ? (
-                    <input
-                      value={task.name}
-                      disabled={!canManageTaskSetup}
-                      onChange={(event) => updateBonusTask(task.id, { name: event.target.value })}
-                    />
-                  ) : (
-                    <strong>{task.name}</strong>
-                  )}
-                  <div className="bonus-meta-line">
-                    <span className="mini">Poeng</span>
-                    {canManageTaskSetup ? (
+            {canManageTaskSetup
+              ? sortedBonusTasks.map((task) => (
+                  <li key={task.id}>
+                    <div>
                       <input
-                        className="required-count-inline"
-                        type="number"
-                        min={1}
+                        value={task.name}
                         disabled={!canManageTaskSetup}
-                        value={task.points}
-                        onChange={(event) =>
-                          updateBonusTask(task.id, {
-                            points: Math.max(1, Math.floor(safeNumber(event.target.value, task.points))),
-                          })
-                        }
+                        onChange={(event) => updateBonusTask(task.id, { name: event.target.value })}
                       />
-                    ) : (
-                      <strong>{task.points}</strong>
-                    )}
-                    <span className="mini bonus-registered">Registrert: {bonusCountMap[task.id] ?? 0}</span>
-                    {canRegisterTasksInCurrentView && (
-                      <button type="button" onClick={() => addEntry('bonus', task.id)}>
-                        Registrer utført
-                      </button>
-                    )}
-                    {canManageTaskSetup && (
-                      <button
-                        type="button"
-                        className="danger"
-                        disabled={!canManageTaskSetup}
-                        onClick={() => removeBonusTask(task.id)}
-                      >
-                        Slett
-                      </button>
-                    )}
-                  </div>
-                  {canManageTaskSetup && (
-                    <p className="mini task-applies-to">
-                      Gjelder for: {getChildrenForTask('bonus', task.name, task.points).join(', ') || 'Ingen'}
-                    </p>
-                  )}
-                </div>
-              </li>
-            ))}
+                      <div className="bonus-meta-line">
+                        <span className="mini">Poeng</span>
+                        <input
+                          className="required-count-inline"
+                          type="number"
+                          min={1}
+                          disabled={!canManageTaskSetup}
+                          value={task.points}
+                          onChange={(event) =>
+                            updateBonusTask(task.id, {
+                              points: Math.max(1, Math.floor(safeNumber(event.target.value, task.points))),
+                            })
+                          }
+                        />
+                        <span className="mini bonus-registered">Registrert: {bonusCountMap[task.id] ?? 0}</span>
+                        {canRegisterTasksInCurrentView && (
+                          <button type="button" onClick={() => addEntry('bonus', task.id)}>
+                            Registrer utført
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          className="danger"
+                          disabled={!canManageTaskSetup}
+                          onClick={() => removeBonusTask(task.id)}
+                        >
+                          Slett
+                        </button>
+                      </div>
+                      <p className="mini task-applies-to">
+                        Gjelder for: {getChildrenForTask('bonus', task.name, task.points).join(', ') || 'Ingen'}
+                      </p>
+                    </div>
+                  </li>
+                ))
+              : sharedBonusTasks.map((task) => {
+                  const activeChildTask = activeProfileBonusTaskByKey.get(task.key)
+                  const canRegisterThisTask = canRegisterTasksInCurrentView && Boolean(activeChildTask)
+                  return (
+                    <li key={task.key}>
+                      <div>
+                        <strong>{task.name}</strong>
+                        <div className="bonus-meta-line">
+                          <span className="mini">Poeng</span>
+                          <strong>{task.points}</strong>
+                          <span className="mini bonus-registered">
+                            Registrert: {sharedBonusCountByTaskKey.get(task.key) ?? 0}
+                          </span>
+                          {canRegisterThisTask && activeChildTask && (
+                            <button type="button" onClick={() => addEntry('bonus', activeChildTask.id)}>
+                              Registrer utført
+                            </button>
+                          )}
+                        </div>
+                        <p className="mini task-applies-to">
+                          Synlig for alle. Gjelder for: {task.childNames.join(', ')}
+                        </p>
+                      </div>
+                    </li>
+                  )
+                })}
           </ul>
           <div className="task-targets compact-targets bonus-log">
-            <p className="mini">Registrerte ekstraoppgaver i perioden (nyeste nederst):</p>
+            <p className="mini">Registrerte ekstraoppgaver i perioden (alle barn, nyeste nederst):</p>
             <ul className="log-list">
-              {bonusEntriesThisPeriod.length === 0 && <li>Ingen registreringer ennå.</li>}
-              {bonusEntriesThisPeriod.map((entry) => (
+              {sharedBonusEntriesThisPeriod.length === 0 && <li>Ingen registreringer ennå.</li>}
+              {sharedBonusEntriesThisPeriod.map((entry) => (
                 <li key={entry.id}>
                   <strong>{entry.taskName}</strong>
+                  <p className="mini">{entry.childName} tok oppgaven og fikk {entry.points} poeng.</p>
                   <p className="mini">{new Date(entry.timestamp).toLocaleTimeString('nb-NO')}</p>
                 </li>
               ))}
@@ -2971,6 +3603,8 @@ function App() {
               <input
                 type="number"
                 min={1}
+                placeholder="Poeng"
+                aria-label="Poeng for ekstraoppgave"
                 value={newBonusPoints}
                 onChange={(event) =>
                   setNewBonusPoints(Math.max(1, safeNumber(event.target.value, 1)))
@@ -3299,11 +3933,18 @@ function App() {
         <section className="card reset-card">
           <h2>Vedlikehold</h2>
           <p className="mini">
-            Alle data lagres kun lokalt i nettleseren (localStorage). Du kan nullstille aktivt barn.
+            Alle data lagres kun lokalt i nettleseren (localStorage).
           </p>
-          <button className="danger" type="button" onClick={resetAllData}>
-            Nullstill aktivt barn
-          </button>
+          <div className="reset-actions">
+            <button className="danger" type="button" onClick={resetAllData}>
+              Nullstill aktivt barn
+            </button>
+            {isParentAdminSession && (
+              <button className="danger" type="button" onClick={resetEntireAppData}>
+                Nullstill all appdata
+              </button>
+            )}
+          </div>
         </section>
       )}
       </>

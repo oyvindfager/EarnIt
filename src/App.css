@@ -63,6 +63,17 @@ body {
 	font-size: 0.95rem;
 }
 
+.hero-profile-row {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 8px;
+}
+
+.hero-profile-row p {
+	margin: 0;
+}
+
 .hero-side {
 	display: grid;
 	align-content: start;
@@ -455,6 +466,27 @@ h2 {
 	background: #2a9d8f;
 }
 
+.children-code-grid {
+	display: grid;
+	gap: 10px;
+}
+
+.child-code-card {
+	border: 1px solid var(--line);
+	border-radius: 12px;
+	background: rgba(255, 255, 255, 0.9);
+	padding: 10px;
+	display: grid;
+	gap: 8px;
+}
+
+.child-code-head {
+	display: flex;
+	justify-content: space-between;
+	align-items: baseline;
+	gap: 8px;
+}
+
 .module-security {
 	border-left-color: #264653;
 	background: linear-gradient(180deg, rgba(38, 70, 83, 0.08), rgba(255, 255, 255, 0.9));
@@ -502,8 +534,11 @@ h2 {
 
 .parent-child-switch {
 	display: grid;
-	gap: 8px;
-	padding: 14px;
+	gap: 10px;
+	padding: 16px;
+	border: 2px solid rgba(15, 118, 110, 0.3);
+	background: linear-gradient(165deg, rgba(224, 248, 243, 0.92), rgba(255, 255, 255, 0.96));
+	box-shadow: 0 14px 28px rgba(15, 118, 110, 0.12);
 }
 
 .tab-nav {
@@ -522,11 +557,13 @@ h2 {
 }
 
 .logout-mini {
-	min-height: 34px;
-	padding: 4px 10px;
-	font-size: 0.82rem;
+	min-height: 24px;
+	padding: 2px 8px;
+	font-size: 0.72rem;
 	line-height: 1;
-	border-radius: 10px;
+	border-radius: 8px;
+	width: auto;
+	justify-self: start;
 }
 
 .install-mini {
@@ -904,6 +941,12 @@ button:hover {
 	gap: 12px;
 	align-items: center;
 	justify-content: space-between;
+}
+
+.reset-actions {
+	display: flex;
+	gap: 8px;
+	flex-wrap: wrap;
 }
 
 @media (max-width: 1040px) {
