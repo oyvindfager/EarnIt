@@ -1,0 +1,15 @@
+<svg width="360" height="220" viewBox="0 0 360 220" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect x="26" y="26" width="308" height="168" rx="20" fill="url(#paint0_linear)" stroke="#1E3557" stroke-width="4"/>
+  <rect x="26" y="66" width="308" height="36" fill="#1E3557"/>
+  <rect x="58" y="126" width="48" height="36" rx="6" fill="#F3CF8E" stroke="#B68A42" stroke-width="2"/>
+  <rect x="130" y="136" width="126" height="12" rx="6" fill="#DDE7F7"/>
+  <text x="58" y="178" fill="#ECF3FF" font-family="Arial, sans-serif" font-size="16" font-weight="700">MIN UKELONN</text>
+  <text x="250" y="178" fill="#ECF3FF" font-family="Arial, sans-serif" font-size="14" font-weight="700">VISA</text>
+
+  <defs>
+    <linearGradient id="paint0_linear" x1="30" y1="30" x2="334" y2="194" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#325A93"/>
+      <stop offset="1" stop-color="#1D3557"/>
+    </linearGradient>
+  </defs>
+</svg>
