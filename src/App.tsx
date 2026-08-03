@@ -97,6 +97,11 @@ type AppState = {
   parentSettings: ParentSettings
 }
 
+type DeferredInstallPromptEvent = Event & {
+  prompt: () => Promise<void>
+  userChoice: Promise<{ outcome: 'accepted' | 'dismissed'; platform: string }>
+}
+
 const STORAGE_KEY = 'ukelonn-app-state-v2'
 const AUTH_SESSION_KEY = 'ukelonn-parent-session-v1'
 const AUTH_ITERATIONS = 120000
@@ -453,6 +458,8 @@ function App() {
   const [parentTestRegistrationEnabled, setParentTestRegistrationEnabled] = useState(false)
   const [taskTargetChildIds, setTaskTargetChildIds] = useState<string[]>([])
   const [levelUpToast, setLevelUpToast] = useState<string | null>(null)
+  const [installPromptEvent, setInstallPromptEvent] = useState<DeferredInstallPromptEvent | null>(null)
+  const [isInstalledApp, setIsInstalledApp] = useState(false)
   const previousLevelByChildRef = useRef<Record<string, string | null>>({})
   const toastTimerRef = useRef<number | null>(null)
   const parentIdleTimerRef = useRef<number | null>(null)
@@ -994,6 +1001,35 @@ function App() {
   }, [activeTab, canManage, state.profiles, taskTargetChildIds.length])
 
   useEffect(() => {
+    const mediaQuery = window.matchMedia('(display-mode: standalone)')
+    setIsInstalledApp(mediaQuery.matches)
+
+    const onBeforeInstallPrompt = (event: Event) => {
+      event.preventDefault()
+      setInstallPromptEvent(event as DeferredInstallPromptEvent)
+    }
+
+    const onInstalled = () => {
+      setIsInstalledApp(true)
+      setInstallPromptEvent(null)
+    }
+
+    const onDisplayModeChange = () => {
+      setIsInstalledApp(mediaQuery.matches)
+    }
+
+    window.addEventListener('beforeinstallprompt', onBeforeInstallPrompt)
+    window.addEventListener('appinstalled', onInstalled)
+    mediaQuery.addEventListener('change', onDisplayModeChange)
+
+    return () => {
+      window.removeEventListener('beforeinstallprompt', onBeforeInstallPrompt)
+      window.removeEventListener('appinstalled', onInstalled)
+      mediaQuery.removeEventListener('change', onDisplayModeChange)
+    }
+  }, [])
+
+  useEffect(() => {
     try {
       const raw = localStorage.getItem(AUTH_SESSION_KEY)
       if (!raw) {
@@ -1247,6 +1283,19 @@ function App() {
     setShowChildPinInput(false)
     setActiveTab('overview')
     clearParentSession()
+  }
+
+  async function installApp() {
+    if (!installPromptEvent) {
+      window.alert('Installasjon er ikke tilgjengelig ennå. Prøv igjen om noen sekunder.')
+      return
+    }
+
+    await installPromptEvent.prompt()
+    const choice = await installPromptEvent.userChoice
+    if (choice.outcome === 'accepted') {
+      setInstallPromptEvent(null)
+    }
   }
 
   async function unlockParentMode(event: FormEvent) {
@@ -1847,6 +1896,11 @@ function App() {
           </p>
         </div>
         <div className="hero-side">
+          {!isInstalledApp && installPromptEvent && (
+            <button type="button" className="install-mini" onClick={installApp}>
+              Last ned app
+            </button>
+          )}
           {isLoggedIn && (
             <button type="button" className="logout-mini" onClick={logoutApp}>
               Logg ut

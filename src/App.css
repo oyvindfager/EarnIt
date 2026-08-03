@@ -529,6 +529,17 @@ h2 {
 	border-radius: 10px;
 }
 
+.install-mini {
+	min-height: 34px;
+	padding: 4px 10px;
+	font-size: 0.82rem;
+	line-height: 1;
+	border-radius: 10px;
+	background: linear-gradient(135deg, #0f766e, #0a5e59);
+	color: #fff;
+	border-color: #0f766e;
+}
+
 .tab-nav button {
 	padding: 8px 10px;
 	min-height: 52px;
