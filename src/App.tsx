@@ -1775,36 +1775,6 @@ function App() {
     }))
   }
 
-  function markSettlementAsPaid(settlementId: string) {
-    if (!canManage) {
-      return
-    }
-    updateActiveProfile((profile) => ({
-      ...profile,
-      settlements: profile.settlements.map((settlement) =>
-        settlement.id === settlementId
-          ? {
-              ...settlement,
-              withdrawnAmount: settlement.totalPaid,
-              paidAt: settlement.paidAt ?? new Date().toISOString(),
-            }
-          : settlement,
-      ),
-    }))
-  }
-
-  function markSettlementAsUnpaid(settlementId: string) {
-    if (!canManage) {
-      return
-    }
-    updateActiveProfile((profile) => ({
-      ...profile,
-      settlements: profile.settlements.map((settlement) =>
-        settlement.id === settlementId ? { ...settlement, withdrawnAmount: 0, paidAt: null } : settlement,
-      ),
-    }))
-  }
-
   function registerWithdrawalFromRentAccount(event: FormEvent) {
     event.preventDefault()
     if (!canManage) {
